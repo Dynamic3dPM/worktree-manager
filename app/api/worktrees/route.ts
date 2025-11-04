@@ -55,7 +55,7 @@ for (const [key, config] of Object.entries(REPO_MAP)) {
   REPO_NAME_MAP[config.name] = { key, config };
 }
 
-const VALID_TYPES = ['feat', 'bugs', 'fixes'];
+const VALID_TYPES = ['feat', 'bugs', 'fixes', 'qaqc'];
 const ROOT_DIR = process.env.REPO_ROOT || '/repos';
 const HOST_ROOT_DIR = process.env.HOST_REPO_ROOT || ROOT_DIR;
     // Worktrees are organized in Tree/{repo}/{branchName} at the root level

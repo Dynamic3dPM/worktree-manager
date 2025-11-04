@@ -29,7 +29,8 @@ const REPO_DISPLAY_NAMES: Record<string, string> = {
 const TYPE_DISPLAY_NAMES: Record<string, string> = {
   feat: 'New Feature',
   bugs: 'Bug Fix',
-  fixes: 'Fix'
+  fixes: 'Fix',
+  qaqc: 'QAQC'
 };
 
 export default function Home() {
@@ -316,6 +317,7 @@ export default function Home() {
                 <option value="feat">New Feature</option>
                 <option value="bugs">Bug Fix</option>
                 <option value="fixes">Fix</option>
+                <option value="qaqc">QAQC</option>
               </select>
             </div>
 

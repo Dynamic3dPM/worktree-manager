@@ -7,7 +7,9 @@ services:
         - USER_ID=${USER_ID:-1023}
         - GROUP_ID=${GROUP_ID:-1023}
         # Add a build arg that changes on each build to invalidate cache
-        - CACHE_BUST=${CACHE_BUST:-$(date +%s)}
+        # Note: Set CACHE_BUST environment variable before running docker-compose
+        # e.g., CACHE_BUST=$(date +%s) docker-compose build
+        - CACHE_BUST=${CACHE_BUST:-}
     container_name: worktree-manager
     env_file:
       - .env
