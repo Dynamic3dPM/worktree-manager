@@ -1,0 +1,42 @@
+services:
+  worktree-manager:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - USER_ID=${USER_ID:-1023}
+        - GROUP_ID=${GROUP_ID:-1023}
+    container_name: worktree-manager
+    env_file:
+      - .env
+    ports:
+      - "3030:3000"
+    environment:
+      - REPO_ROOT=/repos
+      - HOST_REPO_ROOT=${HOST_REPO_ROOT:-/home/hds-175/sideline-suregons}
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - GITHUB_ORG=${GITHUB_ORG:-AutoRemediation}
+      - FRONTEND_REPO=${FRONTEND_REPO:-sideline-frontend}
+      - BACKEND_REPO=${BACKEND_REPO:-sideline-backend}
+      - VIEWER_REPO=${VIEWER_REPO:-ohif-viewer}
+      - FRONTEND_KEY=${FRONTEND_KEY:-frontend}
+      - BACKEND_KEY=${BACKEND_KEY:-backend}
+      - VIEWER_KEY=${VIEWER_KEY:-viewer}
+      - NODE_ENV=production
+    volumes:
+      # Mount the directory containing your repositories
+      # Adjust this path to match where your repositories are located on the host
+      # Directory names should match repository names configured in FRONTEND_REPO, BACKEND_REPO, etc.
+      - /home/hds-175/sideline-suregons:/repos:rw
+      # Alternative: mount specific repository directories (uncomment and adjust paths):
+      # - /path/to/your-frontend-repo:/repos/your-frontend-repo:rw
+      # - /path/to/your-backend-repo:/repos/your-backend-repo:rw
+      # - /path/to/your-viewer-repo:/repos/your-viewer-repo:rw
+    restart: unless-stopped
+    networks:
+      - worktree-network
+
+networks:
+  worktree-network:
+    driver: bridge
+
