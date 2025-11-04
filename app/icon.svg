@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Tree trunk -->
+  <rect x="28" y="42" width="8" height="20" rx="2" fill="#5D4037"/>
+  
+  <!-- Main tree foliage (large circles for branches) -->
+  <circle cx="32" cy="30" r="14" fill="#2E7D32"/>
+  <circle cx="24" cy="34" r="11" fill="#388E3C"/>
+  <circle cx="40" cy="34" r="11" fill="#2E7D32"/>
+  <circle cx="32" cy="18" r="10" fill="#43A047"/>
+  
+  <!-- Branch nodes (representing Git branches) -->
+  <circle cx="32" cy="18" r="3" fill="#1B5E20"/>
+  <circle cx="24" cy="34" r="3" fill="#1B5E20"/>
+  <circle cx="40" cy="34" r="3" fill="#1B5E20"/>
+</svg>
