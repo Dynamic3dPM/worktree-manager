@@ -6,6 +6,8 @@ services:
       args:
         - USER_ID=${USER_ID:-1023}
         - GROUP_ID=${GROUP_ID:-1023}
+        # Add a build arg that changes on each build to invalidate cache
+        - CACHE_BUST=${CACHE_BUST:-$(date +%s)}
     container_name: worktree-manager
     env_file:
       - .env
@@ -22,7 +24,7 @@ services:
       - FRONTEND_KEY=${FRONTEND_KEY:-frontend}
       - BACKEND_KEY=${BACKEND_KEY:-backend}
       - VIEWER_KEY=${VIEWER_KEY:-viewer}
-      - NODE_ENV=production
+      - NODE_ENV=development
     volumes:
       # Mount the directory containing your repositories
       # Adjust this path to match where your repositories are located on the host

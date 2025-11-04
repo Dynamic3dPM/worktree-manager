@@ -9,6 +9,8 @@ A Next.js web application for managing Git working trees across multiple reposit
 - 🌿 **Branch Management**: Automatically creates branches from dev and organizes them by type (feat, bugs, fixes)
 - 🐳 **Dockerized**: Easy deployment in any environment with Docker
 - ⚡ **Real-time Status**: View all existing working trees at a glance
+- 📊 **GitHub Projects Integration**: Kanban board view with automatic backlog item creation
+- 🔄 **Drag-and-Drop**: Move items between columns to track work progress
 
 ## Quick Start
 
@@ -50,7 +52,11 @@ A Next.js web application for managing Git working trees across multiple reposit
 ### Environment Variables
 
 - `REPO_ROOT`: Root directory where repositories are located (default: `/repos`)
-- `GITHUB_TOKEN`: GitHub personal access token for cloning repositories
+- `HOST_REPO_ROOT`: Host path for repositories (default: same as `REPO_ROOT`)
+- `GITHUB_TOKEN`: GitHub personal access token for cloning repositories and managing projects
+- `GITHUB_ORG`: GitHub organization name (default: `AutoRemediation`)
+- `GITHUB_PROJECT_NAME`: Name for the workspace project (default: `Worktree Manager Project`)
+- `FRONTEND_REPO`, `BACKEND_REPO`, `VIEWER_REPO`: Repository names (defaults: `sideline-frontend`, `sideline-backend`, `ohif-viewer`)
 
 ### Repository Configuration
 
@@ -81,25 +87,45 @@ The docker-compose.yml mounts the parent directory (`../`) to `/repos` so the co
 
 ## Usage
 
-1. **Select Repository**: Choose which repository you want to create a working tree for
+### Creating Working Trees
+
+1. **Select Repository**: Choose which repository you want to create a working tree for (multiple selection supported)
 2. **Choose Branch Type**: Select from "New Feature", "Bug Fix", or "Fix"
 3. **Enter Branch Name**: Provide a descriptive name (e.g., `login-button`, `auth-fix`)
 4. **Create**: Click "Create Working Tree" to generate the isolated working tree
 
-The working tree will be created in the format: `{repo}/{type}/{name}/`
+The working tree will be created in the format: `{repoName}-{type}-{name}/`
+
+### GitHub Projects Kanban Board
+
+1. Navigate to the **Projects** page from the sidebar
+2. View all worktree-related backlog items in a Kanban board
+3. Drag and drop items between columns to track progress
+4. When you create a worktree, a backlog item is automatically added to the project
+
+**Note**: The project is automatically created on first use if it doesn't exist.
 
 ## API Endpoints
 
+### Worktrees
 - `GET /api/repos` - List all configured repositories
 - `GET /api/worktrees` - List all existing working trees
 - `POST /api/worktrees` - Create a new working tree
   ```json
   {
-    "repo": "frontend",
+    "repos": ["frontend", "backend"],
     "type": "feat",
     "name": "login-button"
   }
   ```
+- `DELETE /api/worktrees` - Delete a working tree
+
+### Projects
+- `GET /api/projects` - List all organization projects
+- `POST /api/projects` - Create a new project
+- `GET /api/projects/[projectId]` - Get project details with columns and items
+- `POST /api/projects/[projectId]/items` - Create a backlog item
+- `PATCH /api/projects/[projectId]/items` - Update or move a project item
 
 ## Troubleshooting
 
@@ -115,8 +141,18 @@ sudo chown -R $USER:$USER /path/to/repos
 ### GitHub Token Issues
 
 Make sure your GitHub token has the necessary permissions:
-- `repo` scope (for private repositories)
+
+**For Classic Personal Access Tokens:**
+- `repo` scope (for private repositories and cloning)
 - `read:org` scope (if repositories are in an organization)
+- `project` scope (read & write) for GitHub Projects API
+
+**For Fine-Grained Personal Access Tokens:**
+- Repository access: Select the repositories you want to manage
+- Repository permissions: `Contents` (read), `Metadata` (read)
+- Organization permissions: `Projects` (read & write)
+
+**Note**: The token must have Projects permissions to create and manage the Kanban board. Without this, worktree creation will still work, but project items won't be created.
 
 ### Repository Not Found
 
@@ -134,10 +170,23 @@ worktree-manager/
 ├── app/
 │   ├── api/
 │   │   ├── repos/
-│   │   │   └── route.ts      # Repository listing API
-│   │   └── worktrees/
-│   │       └── route.ts      # Working tree management API
-│   └── page.tsx               # Main UI component
+│   │   │   └── route.ts           # Repository listing API
+│   │   ├── worktrees/
+│   │   │   └── route.ts           # Working tree management API
+│   │   └── projects/
+│   │       ├── route.ts           # Projects listing/creation API
+│   │       └── [projectId]/
+│   │           ├── route.ts       # Project details API
+│   │           └── items/
+│   │               └── route.ts   # Project items API
+│   ├── components/
+│   │   └── Sidebar.tsx            # Navigation sidebar
+│   ├── lib/
+│   │   └── github-projects.ts     # GitHub Projects API client
+│   ├── projects/
+│   │   └── page.tsx               # Projects/Kanban board page
+│   ├── layout.tsx                 # Root layout with sidebar
+│   └── page.tsx                   # Main worktrees UI
 ├── Dockerfile
 ├── docker-compose.yml
 └── package.json

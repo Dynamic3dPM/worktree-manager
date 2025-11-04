@@ -10,29 +10,18 @@ COPY package.json package-lock.json* ./
 RUN --mount=type=cache,target=/root/.npm \
     npm ci
 
-# Rebuild the source code only when needed
-FROM base AS builder
-WORKDIR /app
-COPY --from=deps /app/node_modules ./node_modules
-COPY . .
-
-# Set environment variables for build
-ENV NEXT_TELEMETRY_DISABLED=1
-
-# Use cache mount for Next.js build cache to speed up subsequent builds
-RUN --mount=type=cache,target=/app/.next/cache \
-    npm run build
-
-# Production image, copy all the files and run next
+# Development image - run dev server directly
 FROM base AS runner
 WORKDIR /app
 
-ENV NODE_ENV=production
+ENV NODE_ENV=development
 ENV NEXT_TELEMETRY_DISABLED=1
 
 # Use build arguments for user/group IDs to match host user
 ARG USER_ID=1023
 ARG GROUP_ID=1023
+# Cache bust argument - changes on each build to force rebuild
+ARG CACHE_BUST=1
 
 # Create group and user with the same IDs as host user
 RUN addgroup --system --gid ${GROUP_ID} nodejs 2>/dev/null || true
@@ -42,11 +31,12 @@ RUN adduser --system --uid ${USER_ID} --ingroup nodejs nextjs 2>/dev/null || \
 # Make sure git is available in the container
 RUN apk add --no-cache git
 
-# Copy necessary files
-# In standalone mode, Next.js creates a minimal server in .next/standalone
-COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
-COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
-COPY --from=builder --chown=nextjs:nodejs /app/public ./public
+# Copy dependencies and source code
+COPY --from=deps --chown=nextjs:nodejs /app/node_modules ./node_modules
+COPY --chown=nextjs:nodejs . .
+
+# Ensure /app directory and all its contents are owned by nextjs:nodejs
+RUN chown -R nextjs:nodejs /app
 
 # Create directory for repositories (will be mounted as volume)
 RUN mkdir -p /repos && chown -R nextjs:nodejs /repos
@@ -60,4 +50,4 @@ EXPOSE 3000
 ENV PORT=3000
 ENV HOSTNAME="0.0.0.0"
 
-CMD ["node", "server.js"]
+CMD ["npm", "run", "dev"]

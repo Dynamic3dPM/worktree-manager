@@ -37,15 +37,55 @@ export default function Home() {
   const [worktrees, setWorktrees] = useState<Worktree[]>([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
-  const [selectedRepo, setSelectedRepo] = useState('');
+  const [selectedRepos, setSelectedRepos] = useState<string[]>([]);
   const [selectedType, setSelectedType] = useState('');
   const [branchName, setBranchName] = useState('');
+  const [repoBranches, setRepoBranches] = useState<Record<string, string[]>>({});
+  const [baseBranches, setBaseBranches] = useState<Record<string, string>>({});
+  const [loadingBranches, setLoadingBranches] = useState<Record<string, boolean>>({});
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [creatingProgress, setCreatingProgress] = useState<string | null>(null);
 
   useEffect(() => {
     loadData();
   }, []);
+
+  // Load branches for selected repos
+  useEffect(() => {
+    const loadBranchesForRepos = async () => {
+      for (const repoKey of selectedRepos) {
+        if (!repoBranches[repoKey] && !loadingBranches[repoKey]) {
+          setLoadingBranches(prev => ({ ...prev, [repoKey]: true }));
+          try {
+            const response = await fetch(`/api/repos/${repoKey}/branches`);
+            const data = await response.json();
+            if (data.branches) {
+              setRepoBranches(prev => ({ ...prev, [repoKey]: data.branches }));
+              // Set default base branch if not already set
+              setBaseBranches(prev => {
+                if (!prev[repoKey] && data.branches.length > 0) {
+                  // Prefer dev, then main, then master, then first available
+                  const preferred = data.branches.find((b: string) => ['dev', 'main', 'master'].includes(b)) || data.branches[0];
+                  return { ...prev, [repoKey]: preferred };
+                }
+                return prev;
+              });
+            }
+          } catch (error) {
+            console.error(`Failed to load branches for ${repoKey}:`, error);
+          } finally {
+            setLoadingBranches(prev => ({ ...prev, [repoKey]: false }));
+          }
+        }
+      }
+    };
+    
+    if (selectedRepos.length > 0) {
+      loadBranchesForRepos();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedRepos]);
 
   const loadData = async () => {
     try {
@@ -68,9 +108,27 @@ export default function Home() {
     }
   };
 
+  const toggleRepo = (repoKey: string, event: React.MouseEvent) => {
+    // Support Ctrl+click for multi-select
+    if (event.ctrlKey || event.metaKey) {
+      setSelectedRepos(prev => 
+        prev.includes(repoKey) 
+          ? prev.filter(r => r !== repoKey)
+          : [...prev, repoKey]
+      );
+    } else {
+      // Single click: toggle the repo
+      setSelectedRepos(prev => 
+        prev.includes(repoKey) 
+          ? prev.filter(r => r !== repoKey)
+          : [...prev, repoKey]
+      );
+    }
+  };
+
   const handleCreate = async () => {
-    if (!selectedRepo || !selectedType || !branchName.trim()) {
-      setMessage({ type: 'error', text: 'Please fill in all fields' });
+    if (selectedRepos.length === 0 || !selectedType || !branchName.trim()) {
+      setMessage({ type: 'error', text: 'Please select at least one repository and fill in all fields' });
       return;
     }
 
@@ -83,34 +141,64 @@ export default function Home() {
     try {
       setCreating(true);
       setMessage(null);
+      setCreatingProgress(null);
 
       const response = await fetch('/api/worktrees', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          repo: selectedRepo,
+          repos: selectedRepos,
           type: selectedType,
-          name: branchName.trim()
+          name: branchName.trim(),
+          baseBranches: baseBranches
         })
       });
 
       const data = await response.json();
 
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to create working tree');
+        // Include detailed errors if available
+        let errorMessage = data.error || 'Failed to create working trees';
+        if (data.errors && Array.isArray(data.errors) && data.errors.length > 0) {
+          const detailedErrors = data.errors.map((err: any) => {
+            const repoName = REPO_DISPLAY_NAMES[err.repo] || err.repo;
+            return `${repoName}: ${err.error}`;
+          }).join('; ');
+          errorMessage = `${errorMessage} (${detailedErrors})`;
+        }
+        throw new Error(errorMessage);
       }
 
-      setMessage({ type: 'success', text: `Working tree created: ${data.worktree.branch}` });
-      setSelectedRepo('');
+      // Build success message with results
+      const successCount = data.worktrees?.length || 0;
+      const errorCount = data.errors?.length || 0;
+      let messageText = '';
+      
+      if (errorCount === 0) {
+        messageText = `Successfully created ${successCount} working tree${successCount > 1 ? 's' : ''}${successCount > 1 ? ` in ${successCount} repositories` : ''}`;
+        if (successCount > 1) {
+          const repoNames = data.worktrees.map((wt: any) => REPO_DISPLAY_NAMES[wt.repo] || wt.repoName).join(', ');
+          messageText += `: ${repoNames}`;
+        }
+      } else {
+        const successRepos = data.worktrees?.map((wt: any) => REPO_DISPLAY_NAMES[wt.repo] || wt.repoName) || [];
+        const failedRepos = data.errors?.map((err: any) => REPO_DISPLAY_NAMES[err.repo] || err.repo).join(', ') || '';
+        messageText = `Created ${successCount} working tree${successCount > 1 ? 's' : ''}${successRepos.length > 0 ? ` in ${successRepos.join(', ')}` : ''}${failedRepos ? `. Failed in ${failedRepos}` : ''}`;
+      }
+
+      setMessage({ type: errorCount > 0 ? 'error' : 'success', text: messageText });
+      setSelectedRepos([]);
       setSelectedType('');
       setBranchName('');
+      setBaseBranches({});
       
       // Reload data
       await loadData();
     } catch (error: any) {
-      setMessage({ type: 'error', text: error.message || 'Failed to create working tree' });
+      setMessage({ type: 'error', text: error.message || 'Failed to create working trees' });
     } finally {
       setCreating(false);
+      setCreatingProgress(null);
     }
   };
 
@@ -163,7 +251,7 @@ export default function Home() {
     <div className="min-h-screen bg-gray-50 py-8">
       <div className="max-w-6xl mx-auto px-4">
         <h1 className="text-4xl font-bold mb-8 text-gray-900">
-          Git Working Tree Manager
+          Git Working Trees
         </h1>
 
         {/* Create New Working Tree */}
@@ -176,28 +264,42 @@ export default function Home() {
                 ? 'bg-green-100 text-green-800 border border-green-300' 
                 : 'bg-red-100 text-red-800 border border-red-300'
             }`}>
-              {message.text}
+              <div className="whitespace-pre-wrap break-words">{message.text}</div>
             </div>
           )}
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
-                Repository
+                Repositories {selectedRepos.length > 0 && <span className="text-blue-600">({selectedRepos.length} selected)</span>}
               </label>
-              <select
-                value={selectedRepo}
-                onChange={(e) => setSelectedRepo(e.target.value)}
-                className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
-                disabled={creating}
-              >
-                <option value="">Select repository...</option>
-                {repos.map((repo) => (
-                  <option key={repo.key} value={repo.key}>
-                    {REPO_DISPLAY_NAMES[repo.key] || repo.name} {repo.exists ? '✓' : ''}
-                  </option>
-                ))}
-              </select>
+              <div className="border border-gray-300 rounded-md p-3 bg-white max-h-48 overflow-y-auto">
+                {repos.length === 0 ? (
+                  <p className="text-sm text-gray-500">No repositories available</p>
+                ) : (
+                  <div className="space-y-2">
+                    {repos.map((repo) => (
+                      <label
+                        key={repo.key}
+                        className="flex items-center space-x-2 cursor-pointer hover:bg-gray-50 p-2 rounded"
+                        onClick={(e) => toggleRepo(repo.key, e)}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedRepos.includes(repo.key)}
+                          onChange={() => {}} // Handled by onClick
+                          className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                          disabled={creating}
+                        />
+                        <span className="text-sm text-gray-700 flex-1">
+                          {REPO_DISPLAY_NAMES[repo.key] || repo.name} {repo.exists ? '✓' : ''}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <p className="text-xs text-gray-500 mt-1">Click to select. Hold Ctrl/Cmd and click for multiple selection.</p>
             </div>
 
             <div>
@@ -217,6 +319,50 @@ export default function Home() {
               </select>
             </div>
 
+            {selectedRepos.length > 0 && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Base Branch (for each repository)
+                </label>
+                <div className="space-y-2">
+                  {selectedRepos.map((repoKey) => {
+                    const repo = repos.find(r => r.key === repoKey);
+                    const branches = repoBranches[repoKey] || [];
+                    const isLoading = loadingBranches[repoKey];
+                    
+                    return (
+                      <div key={repoKey} className="flex items-center gap-3">
+                        <label className="text-sm text-gray-600 w-32 flex-shrink-0">
+                          {REPO_DISPLAY_NAMES[repoKey] || repo?.name || repoKey}:
+                        </label>
+                        <select
+                          value={baseBranches[repoKey] || ''}
+                          onChange={(e) => setBaseBranches(prev => ({ ...prev, [repoKey]: e.target.value }))}
+                          className="flex-1 px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                          disabled={creating || isLoading}
+                        >
+                          {isLoading ? (
+                            <option>Loading branches...</option>
+                          ) : branches.length === 0 ? (
+                            <option>No branches available</option>
+                          ) : (
+                            <>
+                              <option value="">Select base branch...</option>
+                              {branches.map((branch) => (
+                                <option key={branch} value={branch}>
+                                  {branch}
+                                </option>
+                              ))}
+                            </>
+                          )}
+                        </select>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
                 Branch Name
@@ -229,7 +375,7 @@ export default function Home() {
                 className="w-full px-4 py-2 border border-gray-300 rounded-md focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                 disabled={creating}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !creating && selectedRepo && selectedType && branchName.trim()) {
+                  if (e.key === 'Enter' && !creating && selectedRepos.length > 0 && selectedType && branchName.trim()) {
                     handleCreate();
                   }
                 }}
@@ -237,12 +383,17 @@ export default function Home() {
             </div>
           </div>
 
+          {creatingProgress && (
+            <div className="mb-4 text-sm text-blue-600">
+              {creatingProgress}
+            </div>
+          )}
           <button
             onClick={handleCreate}
-            disabled={creating || !selectedRepo || !selectedType || !branchName.trim()}
+            disabled={creating || selectedRepos.length === 0 || !selectedType || !branchName.trim()}
             className="px-6 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors"
           >
-            {creating ? 'Creating...' : 'Create Working Tree'}
+            {creating ? `Creating in ${selectedRepos.length} repositor${selectedRepos.length > 1 ? 'ies' : 'y'}...` : `Create Working Tree${selectedRepos.length > 1 ? 's' : ''}`}
           </button>
         </div>
 
