@@ -18,8 +18,9 @@ ENV NODE_ENV=development
 ENV NEXT_TELEMETRY_DISABLED=1
 
 # Use build arguments for user/group IDs to match host user
-ARG USER_ID=1023
-ARG GROUP_ID=1023
+# Default to 1020 to match common host user IDs
+ARG USER_ID=1020
+ARG GROUP_ID=1020
 # Cache bust argument - changes on each build to force rebuild
 ARG CACHE_BUST=1
 

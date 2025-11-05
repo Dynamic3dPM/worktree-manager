@@ -1,0 +1,17 @@
+{
+	"folders": [
+		{
+			"name": "worktree-manager",
+			"path": "."
+		},
+		{
+			"name": "project-tim",
+			"path": "../project-tim"
+		},
+		{
+			"name": "repos",
+			"path": "../repos"
+		}
+	],
+	"settings": {}
+}

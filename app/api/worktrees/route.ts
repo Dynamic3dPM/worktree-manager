@@ -1,15 +1,8 @@
 import { NextResponse } from 'next/server';
 import { exec } from 'child_process';
 import { promisify } from 'util';
-import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync, statSync, mkdirSync } from 'fs';
+import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync, statSync, mkdirSync, chmodSync } from 'fs';
 import path from 'path';
-import {
-  findOrCreateWorkspaceProject,
-  getOrCreateBacklogColumn,
-  createDraftIssue,
-  findProjectItemByWorktree,
-  deleteProjectItem,
-} from '@/app/lib/github-projects';
 
 const execAsync = promisify(exec);
 
@@ -17,7 +10,7 @@ const execAsync = promisify(exec);
 // Format: GITHUB_ORG=yourorg,REPO_KEY=repo-name,REPO_KEY=repo-name2
 // Example: GITHUB_ORG=myorg,FRONTEND_REPO=my-frontend,BACKEND_REPO=my-backend
 const getRepoMap = (): Record<string, { name: string; url: string }> => {
-  const githubOrg = process.env.GITHUB_ORG || 'AutoRemediation';
+  const githubOrg = process.env.GITHUB_ORG || 'timcarrender04';
   
   // Allow custom repository configuration via environment variables
   // Format: REPO_KEY=repo-name or use defaults
@@ -92,6 +85,67 @@ function getGitHubToken(): string | null {
 }
 
 // Helper function to create a worktree for a single repository
+// Helper function to fetch repositories dynamically from GitHub
+async function fetchRepositoriesFromGitHub(): Promise<Map<string, { name: string; full_name: string; url: string }>> {
+  const repoMap = new Map<string, { name: string; full_name: string; url: string }>();
+  
+  const token = getGitHubToken();
+  if (!token) {
+    return repoMap;
+  }
+  
+  const headers = {
+    'Authorization': `Bearer ${token}`,
+    'Accept': 'application/vnd.github+json',
+    'X-GitHub-Api-Version': '2022-11-28',
+  };
+  
+  try {
+    let page = 1;
+    let hasMore = true;
+    const perPage = 100;
+    
+    while (hasMore) {
+      const url = `https://api.github.com/user/repos?type=all&sort=updated&direction=desc&per_page=${perPage}&page=${page}`;
+      const response = await fetch(url, { headers });
+      
+      if (!response.ok) {
+        break;
+      }
+      
+      const repos = await response.json();
+      
+      if (repos.length === 0) {
+        hasMore = false;
+      } else {
+        repos.forEach((repo: any) => {
+          const key = repo.name.toLowerCase().replace(/[^a-z0-9]/g, '-');
+          repoMap.set(key, {
+            name: repo.name,
+            full_name: repo.full_name,
+            url: repo.clone_url || repo.html_url, // Use clone_url for git operations
+          });
+        });
+        
+        const linkHeader = response.headers.get('link');
+        if (linkHeader && linkHeader.includes('rel="next"')) {
+          page++;
+        } else {
+          hasMore = false;
+        }
+      }
+      
+      if (page > 100) {
+        hasMore = false;
+      }
+    }
+  } catch (error) {
+    console.error('Error fetching repositories from GitHub:', error);
+  }
+  
+  return repoMap;
+}
+
 // Accepts either repo name (GitHub repo name) or repo key for backward compatibility
 async function createWorktreeForRepo(
   repo: string,
@@ -100,20 +154,32 @@ async function createWorktreeForRepo(
   baseBranch?: string
 ): Promise<{ success: boolean; worktree?: any; error?: string }> {
   try {
-    // First try to find by repo name (GitHub repo name)
+    // First try to find in hardcoded REPO_MAP (for backward compatibility)
     let repoKey: string | undefined;
     let config: { name: string; url: string } | undefined;
     
     if (REPO_NAME_MAP[repo]) {
-      // Found by repo name
+      // Found by repo name in hardcoded map
       repoKey = REPO_NAME_MAP[repo].key;
       config = REPO_NAME_MAP[repo].config;
     } else if (REPO_MAP[repo]) {
-      // Found by repo key (backward compatibility)
+      // Found by repo key in hardcoded map
       repoKey = repo;
       config = REPO_MAP[repo];
     } else {
-      return { success: false, error: `Invalid repository: ${repo}` };
+      // Try to fetch dynamically from GitHub
+      const dynamicRepos = await fetchRepositoriesFromGitHub();
+      const matchedRepo = dynamicRepos.get(repo.toLowerCase());
+      
+      if (matchedRepo) {
+        repoKey = repo;
+        config = {
+          name: matchedRepo.name,
+          url: matchedRepo.url,
+        };
+      } else {
+        return { success: false, error: `Invalid repository: ${repo}` };
+      }
     }
     
     const repoPath = path.join(ROOT_DIR, config.name);
@@ -531,6 +597,19 @@ async function createWorktreeForRepo(
       }
     }
     
+    // Remove any existing directory at worktree path
+    if (existsSync(worktreePath)) {
+      try {
+        rmSync(worktreePath, { recursive: true, force: true });
+        console.log(`Removed existing directory at ${worktreePath}`);
+      } catch (error: any) {
+        return { 
+          success: false, 
+          error: `Failed to remove existing directory: ${error.message}` 
+        };
+      }
+    }
+    
     // Determine the base branch to create the worktree from
     // Use provided baseBranch or detect available branch
     let resolvedBaseBranch = baseBranch || 'dev';
@@ -577,8 +656,7 @@ async function createWorktreeForRepo(
       resolvedBaseBranch = branchName;
     }
     
-    // Create working tree
-    // If branch exists, use it; otherwise create new branch from resolvedBaseBranch
+    // Create working tree - ensure the directory doesn't exist first
     // IMPORTANT: Use container path (ROOT_DIR) for worktree creation to ensure git stores correct paths
     const worktreeCommand = branchExists 
       ? `git worktree add "${worktreePath}" ${branchName}`
@@ -599,18 +677,25 @@ async function createWorktreeForRepo(
       const { stdout: worktreeListAfter } = await execAsync('git worktree list', { cwd: repoPath });
       console.log(`Worktree list after creation:\n${worktreeListAfter}`);
       
-      // Fix the .git file if it points to a host path instead of container path
+      // Fix the .git file to use host path for host access (VS Code, etc.)
       const gitFile = path.join(worktreePath, '.git');
       if (existsSync(gitFile)) {
         try {
           const gitContent = readFileSync(gitFile, 'utf-8').trim();
-          // If the .git file points to a host path, fix it to use container path
-          if (gitContent.includes(HOST_ROOT_DIR) && ROOT_DIR !== HOST_ROOT_DIR) {
-            const fixedContent = gitContent.replace(HOST_ROOT_DIR, ROOT_DIR);
-            writeFileSync(gitFile, fixedContent + '\n', 'utf-8');
-            console.log(`Fixed .git file path from host to container: ${gitFile}`);
-            console.log(`  Old: ${gitContent}`);
-            console.log(`  New: ${fixedContent}`);
+          // If we're in a container and the .git file uses container path, update it to host path for host access
+          if (gitContent.startsWith('gitdir: ')) {
+            const gitdirPath = gitContent.replace('gitdir: ', '').trim();
+            // Convert container path to host path if they differ
+            if (gitdirPath.includes(ROOT_DIR) && ROOT_DIR !== HOST_ROOT_DIR) {
+              const hostGitdirPath = gitdirPath.replace(ROOT_DIR, HOST_ROOT_DIR);
+              // Always write host path so git works from the host (VS Code, etc.)
+              // The container can still access it via the mounted volume
+              const fixedContent = `gitdir: ${hostGitdirPath}`;
+              writeFileSync(gitFile, fixedContent + '\n', 'utf-8');
+              console.log(`Fixed .git file path from container to host: ${gitFile}`);
+              console.log(`  Old: ${gitContent}`);
+              console.log(`  New: ${fixedContent}`);
+            }
           }
         } catch (error) {
           console.warn('Failed to fix .git file path:', error);
@@ -625,6 +710,22 @@ async function createWorktreeForRepo(
         console.log(`Verified worktree git repository: on branch ${branchName.trim()}`);
       } catch (error) {
         console.warn(`Warning: Could not verify git repository in worktree: ${error}`);
+      }
+      
+      // Configure git safe.directory for the worktree (for host access)
+      // This prevents "dubious ownership" errors when accessing from the host
+      try {
+        const hostWorktreePath = worktreePath.includes(ROOT_DIR) && ROOT_DIR !== HOST_ROOT_DIR
+          ? worktreePath.replace(ROOT_DIR, HOST_ROOT_DIR)
+          : worktreePath;
+        await execAsync(`git config --global --add safe.directory "${hostWorktreePath}"`, {
+          env: { ...process.env, GIT_TERMINAL_PROMPT: '0' }
+        }).catch(() => {
+          // Ignore if already added or fails
+        });
+        console.log(`Added worktree to git safe.directory: ${hostWorktreePath}`);
+      } catch (error) {
+        console.warn('Failed to add worktree to safe.directory:', error);
       }
       
       // Note: Branch is created locally only. User can push manually when ready.
@@ -768,9 +869,25 @@ export async function GET() {
     }> = [];
     const worktreeSet = new Set<string>(); // Track worktrees by path to avoid duplicates
     
+    // First, fetch dynamic repositories to include all possible repos
+    const dynamicRepos = await fetchRepositoriesFromGitHub();
+    const allReposMap = new Map<string, { name: string; url: string; key: string }>();
+    
+    // Add hardcoded repos
+    for (const [repoKey, config] of Object.entries(REPO_MAP)) {
+      allReposMap.set(repoKey, { ...config, key: repoKey });
+    }
+    
+    // Add dynamically fetched repos
+    dynamicRepos.forEach((repo, key) => {
+      if (!allReposMap.has(key)) {
+        allReposMap.set(key, { name: repo.name, url: repo.url, key });
+      }
+    });
+    
     // First, discover worktrees using git worktree list for each repository
     // This finds worktrees regardless of their location (old format, new format, etc.)
-    for (const [repoKey, config] of Object.entries(REPO_MAP)) {
+    for (const [repoKey, config] of allReposMap.entries()) {
       const repoPath = path.join(ROOT_DIR, config.name);
       if (!existsSync(repoPath) || !existsSync(path.join(repoPath, '.git'))) {
         continue;
@@ -787,11 +904,6 @@ export async function GET() {
           const worktreePath = parts[0];
           // Skip the main repository path
           if (worktreePath === repoPath || worktreePath.replace(/\/$/, '') === repoPath.replace(/\/$/, '')) {
-            continue;
-          }
-          
-          // Skip prunable worktrees (directories don't exist)
-          if (line.includes('prunable')) {
             continue;
           }
           
@@ -815,7 +927,16 @@ export async function GET() {
             ? worktreePath.replace(HOST_ROOT_DIR, ROOT_DIR)
             : worktreePath;
           
-          if (!existsSync(containerPath)) {
+          // Check if directory exists - if it does, include it even if marked as prunable
+          const directoryExists = existsSync(containerPath);
+          
+          // Only skip if marked prunable AND directory doesn't exist
+          if (line.includes('prunable') && !directoryExists) {
+            continue;
+          }
+          
+          // If directory doesn't exist, skip it
+          if (!directoryExists) {
             continue;
           }
           
@@ -1092,9 +1213,13 @@ export async function POST(request: Request) {
       );
     }
     
-    // Validate all repos exist (by name or key for backward compatibility)
+    // Validate all repos exist (by name or key for backward compatibility, or dynamically from GitHub)
+    const dynamicRepos = await fetchRepositoriesFromGitHub();
     for (const repoIdentifier of reposToProcess) {
-      if (!REPO_NAME_MAP[repoIdentifier] && !REPO_MAP[repoIdentifier]) {
+      const inHardcoded = REPO_NAME_MAP[repoIdentifier] || REPO_MAP[repoIdentifier];
+      const inDynamic = dynamicRepos.has(repoIdentifier.toLowerCase());
+      
+      if (!inHardcoded && !inDynamic) {
         return NextResponse.json(
           { error: `Invalid repository: ${repoIdentifier}` },
           { status: 400 }
@@ -1136,37 +1261,14 @@ export async function POST(request: Request) {
       );
     }
     
-    // Create GitHub Projects backlog items for successful worktrees
-    try {
-      const githubOrg = process.env.GITHUB_ORG || 'AutoRemediation';
-      const project = await findOrCreateWorkspaceProject(githubOrg);
-      const backlogColumnId = await getOrCreateBacklogColumn(project.id);
-      
-      for (const worktree of results) {
-        const title = `${worktree.repoName}: ${worktree.type}-${worktree.name}`;
-        const body = `Repository: ${worktree.repoName}\nBranch: ${worktree.branch}\nType: ${worktree.type}\nName: ${worktree.name}\nPath: ${worktree.path}`;
-        
-        try {
-          await createDraftIssue(project.id, backlogColumnId, title, body);
-        } catch (projectError: any) {
-          console.warn(`Failed to create project item for worktree ${worktree.branch}:`, projectError.message);
-          // Don't fail the entire request if project item creation fails
-        }
-      }
-    } catch (projectError: any) {
-      console.warn('Failed to create GitHub Projects items:', projectError.message);
-      // Don't fail the entire request if project integration fails
-    }
-    
+    // Return success with results and any errors
     return NextResponse.json({
-      success: true,
-      message: `Created ${results.length} working tree${results.length > 1 ? 's' : ''} successfully`,
       worktrees: results,
       errors: errors.length > 0 ? errors : undefined
     });
   } catch (error: any) {
     return NextResponse.json(
-      { error: error.message || 'Failed to create working trees' },
+      { error: error.message || 'Failed to create worktrees' },
       { status: 500 }
     );
   }
@@ -1177,7 +1279,6 @@ export async function DELETE(request: Request) {
     const body = await request.json();
     const { repo, type, name, path: worktreePath } = body;
     
-    // Validate inputs
     if (!repo || !type || !name) {
       return NextResponse.json(
         { error: 'Missing required fields: repo, type, name' },
@@ -1185,14 +1286,7 @@ export async function DELETE(request: Request) {
       );
     }
     
-    if (!VALID_TYPES.includes(type)) {
-      return NextResponse.json(
-        { error: `Invalid type. Must be one of: ${VALID_TYPES.join(', ')}` },
-        { status: 400 }
-      );
-    }
-    
-    // Support both repo key and repo name for backward compatibility
+    // Find repository config - check both hardcoded and dynamic repos
     let repoKey: string | undefined;
     let config: { name: string; url: string } | undefined;
     
@@ -1203,90 +1297,382 @@ export async function DELETE(request: Request) {
       repoKey = repo;
       config = REPO_MAP[repo];
     } else {
-      return NextResponse.json(
-        { error: `Invalid repository: ${repo}` },
-        { status: 400 }
-      );
+      // Try to fetch dynamically from GitHub
+      const dynamicRepos = await fetchRepositoriesFromGitHub();
+      const matchedRepo = dynamicRepos.get(repo.toLowerCase());
+      
+      if (matchedRepo) {
+        repoKey = repo;
+        config = {
+          name: matchedRepo.name,
+          url: matchedRepo.url,
+        };
+      } else {
+        return NextResponse.json(
+          { error: `Invalid repository: ${repo}` },
+          { status: 400 }
+        );
+      }
     }
     
     const repoPath = path.join(ROOT_DIR, config.name);
-    const branchName = `${config.name}-${type}-${name}`;
-    // Worktrees are organized in Tree/{repo}/{branchName} where branchName includes repo prefix
-    const fullWorktreePath = worktreePath || path.join(WORKTREE_ROOT, config.name, branchName);
     
-    // Check if worktree directory exists
-    if (!existsSync(fullWorktreePath)) {
+    if (!existsSync(repoPath)) {
       return NextResponse.json(
-        { error: `Working tree not found at ${fullWorktreePath}` },
+        { error: `Repository ${config.name} not found` },
         { status: 404 }
       );
     }
     
-    // Check if repo exists
-    if (!existsSync(repoPath) || !existsSync(path.join(repoPath, '.git'))) {
-      return NextResponse.json(
-        { error: `Repository not found at ${repoPath}` },
-        { status: 404 }
-      );
+    // Use provided path or construct from worktree root
+    const targetPath = worktreePath || path.join(WORKTREE_ROOT, config.name, `${config.name}-${type}-${name}`);
+    
+    // Fix permissions before attempting removal (in case files are owned by host user)
+    // This helps when the container user doesn't match the host user
+    if (existsSync(targetPath)) {
+      try {
+        // Make the entire worktree directory writable recursively
+        // This allows removal even if files are owned by a different user (if filesystem allows)
+        const fixPermissions = (dirPath: string) => {
+          try {
+            chmodSync(dirPath, 0o755); // Make directory writable
+            const gitFile = path.join(dirPath, '.git');
+            if (existsSync(gitFile)) {
+              chmodSync(gitFile, 0o644); // Make .git file writable
+            }
+          } catch (chmodError) {
+            // Ignore chmod errors - might fail if filesystem doesn't allow it
+            console.warn(`Could not fix permissions for ${dirPath}: ${chmodError}`);
+          }
+        };
+        fixPermissions(targetPath);
+      } catch (permError) {
+        // Ignore permission fixing errors - we'll try removal anyway
+        console.warn(`Failed to fix permissions: ${permError}`);
+      }
     }
     
-    // Remove git worktree
+    let removalAttempted = false;
+    let removalSucceeded = false;
+    
     try {
-      await execAsync(`git worktree remove "${fullWorktreePath}" --force`, {
+      // Try to remove using git worktree remove
+      await execAsync(`git worktree remove "${targetPath}" --force`, {
         cwd: repoPath
       });
+      removalAttempted = true;
+      removalSucceeded = true;
     } catch (error: any) {
-      // If worktree remove fails, try to remove the directory anyway
-      // This handles cases where the worktree might be in an inconsistent state
-      console.warn(`Failed to remove worktree via git: ${error.message}`);
-    }
-    
-    // Remove the directory if it still exists
-    if (existsSync(fullWorktreePath)) {
+      removalAttempted = true;
+      // If git worktree remove fails, try fixing permissions and retrying, then manual removal
+      const errorMessage = error.message || String(error);
+      const isPermissionError = errorMessage.includes('EACCES') || 
+                                errorMessage.includes('permission denied') ||
+                                errorMessage.includes('Permission denied') ||
+                                errorMessage.includes('EACCES');
+      
+      if (isPermissionError && existsSync(targetPath)) {
+        console.warn(`Permission error during git worktree remove: ${errorMessage}, attempting to fix permissions and retry`);
+        try {
+          // Fix permissions on the .git file/link specifically (common issue)
+          const gitFile = path.join(targetPath, '.git');
+          if (existsSync(gitFile)) {
+            try {
+              await execAsync(`chmod 644 "${gitFile}" 2>/dev/null || chmod 755 "${gitFile}" 2>/dev/null || true`);
+            } catch {
+              // Ignore individual file permission errors
+            }
+          }
+          
+          // Try to make files writable using chmod recursively
+          // Use a shell command to recursively chmod the directory
+          await execAsync(`chmod -R u+w "${targetPath}" 2>/dev/null || true`, {
+            cwd: repoPath
+          });
+          
+          // Also try to fix ownership if possible (if running as root or with sudo)
+          try {
+            await execAsync(`chown -R $(whoami) "${targetPath}" 2>/dev/null || true`);
+          } catch {
+            // Ignore chown errors (might not have permission)
+          }
+          
+          // Retry git worktree remove after fixing permissions
+          try {
+            await execAsync(`git worktree remove "${targetPath}" --force`, {
+              cwd: repoPath
+            });
+            removalSucceeded = true;
+            // Don't return early - verify it actually worked
+          } catch (retryError) {
+            console.warn(`Retry after chmod also failed: ${retryError}`);
+          }
+        } catch (chmodError) {
+          console.warn(`Failed to fix permissions with chmod: ${chmodError}`);
+        }
+      }
+      
+      // If git worktree remove fails, try manual removal
+      console.warn(`Failed to remove worktree via git: ${errorMessage}, trying manual removal`);
       try {
-        rmSync(fullWorktreePath, { recursive: true, force: true });
-      } catch (error: any) {
+        if (existsSync(targetPath)) {
+          // Fix .git file permissions first (common issue)
+          const gitFile = path.join(targetPath, '.git');
+          if (existsSync(gitFile)) {
+            try {
+              // Try to remove the .git file/link first
+              await execAsync(`chmod 644 "${gitFile}" 2>/dev/null || chmod 755 "${gitFile}" 2>/dev/null || true`);
+              // Try to remove it directly
+              try {
+                rmSync(gitFile, { force: true });
+              } catch {
+                // If that fails, try with sudo (if available)
+                try {
+                  await execAsync(`sudo rm -f "${gitFile}" 2>/dev/null || true`);
+                } catch {
+                  // Ignore sudo errors
+                }
+              }
+            } catch {
+              // Ignore .git file removal errors
+            }
+          }
+          
+          // Try to make files writable before manual removal
+          try {
+            await execAsync(`chmod -R u+w "${targetPath}" 2>/dev/null || true`);
+            // Try fixing ownership
+            try {
+              await execAsync(`chown -R $(whoami) "${targetPath}" 2>/dev/null || true`);
+            } catch {
+              // Ignore chown errors
+            }
+          } catch {
+            // Ignore chmod errors
+          }
+          
+          // Try manual removal
+          try {
+            rmSync(targetPath, { recursive: true, force: true });
+          } catch (rmSyncError: any) {
+            // If rmSync fails, try using shell command with more force
+            try {
+              await execAsync(`rm -rf "${targetPath}" 2>/dev/null || true`);
+            } catch {
+              // Last resort: try with sudo if available
+              try {
+                await execAsync(`sudo rm -rf "${targetPath}" 2>/dev/null || true`);
+              } catch {
+                throw rmSyncError; // Re-throw original error if all methods fail
+              }
+            }
+          }
+          
+          // Verify the worktree is removed from git's registry
+          try {
+            await execAsync(`git worktree prune`, { cwd: repoPath });
+          } catch {
+            // Ignore prune errors
+          }
+        } else {
+          // Directory doesn't exist, but worktree might still be registered
+          // Just prune it
+          try {
+            await execAsync(`git worktree prune`, { cwd: repoPath });
+          } catch {
+            // Ignore prune errors
+          }
+        }
+      } catch (rmError: any) {
         return NextResponse.json(
-          { error: `Failed to remove directory: ${error.message}` },
+          { error: `Failed to remove worktree: ${rmError.message}. The worktree directory may need to be manually removed or permissions fixed on the host. You can try: sudo rm -rf "${targetPath}"` },
           { status: 500 }
         );
       }
     }
     
-    // Delete associated GitHub Projects card if it exists
+    // Verify the worktree was actually removed
+    // Check both directory existence and git worktree list
+    let actuallyRemoved = false;
+    
+    // Check if directory still exists
+    const dirStillExists = existsSync(targetPath);
+    
+    // Check if worktree is still registered in git
     try {
-      const githubOrg = process.env.GITHUB_ORG || 'AutoRemediation';
-      const project = await findOrCreateWorkspaceProject(githubOrg);
-      const projectItem = await findProjectItemByWorktree(project.id, config.name, branchName);
+      const { stdout: worktreeList } = await execAsync('git worktree list', { cwd: repoPath });
+      const worktreeLines = worktreeList.trim().split('\n');
+      const normalizedTargetPath = targetPath.replace(/\/$/, '');
       
-      if (projectItem) {
-        try {
-          await deleteProjectItem(projectItem.id);
-          console.log(`Deleted project card for worktree ${branchName}`);
-        } catch (deleteError: any) {
-          console.warn(`Failed to delete project card: ${deleteError.message}`);
-          // Don't fail the request if project card deletion fails
-        }
-      }
-    } catch (projectError: any) {
-      console.warn('Failed to delete GitHub Projects item:', projectError.message);
-      // Don't fail the request if project integration fails
+      const stillRegistered = worktreeLines.some(line => {
+        const parts = line.trim().split(/\s+/);
+        if (parts.length < 2) return false;
+        const linePath = parts[0].replace(/\/$/, '');
+        return linePath === normalizedTargetPath || 
+               path.resolve(linePath) === path.resolve(normalizedTargetPath);
+      });
+      
+      // Consider it removed if directory doesn't exist AND not in git list
+      actuallyRemoved = !dirStillExists && !stillRegistered;
+    } catch {
+      // If we can't check git list, just check directory
+      actuallyRemoved = !dirStillExists;
     }
     
-    // Optionally remove the branch (uncomment if desired)
-    // try {
-    //   await execAsync(`git branch -D ${branchName}`, { cwd: repoPath });
-    // } catch {
-    //   // Ignore if branch doesn't exist or can't be deleted
-    // }
+    if (!actuallyRemoved) {
+      // Try one more time with git worktree prune and manual removal
+      console.warn('Worktree still exists after removal attempt, trying final cleanup');
+      try {
+        // Prune first
+        await execAsync(`git worktree prune`, { cwd: repoPath }).catch(() => {});
+        
+        // If directory still exists, try removing it with multiple methods
+        if (existsSync(targetPath)) {
+          let removed = false;
+          
+          // Method 1: Fix permissions and ownership, then remove
+          try {
+            // Get current user info
+            const { stdout: currentUser } = await execAsync(`whoami`);
+            const { stdout: currentUid } = await execAsync(`id -u`);
+            const { stdout: currentGid } = await execAsync(`id -g`);
+            
+            // Try to change ownership to current user (if we have permissions)
+            await execAsync(`chown -R ${currentUid.trim()}:${currentGid.trim()} "${targetPath}" 2>/dev/null || true`).catch(() => {});
+            // Make writable
+            await execAsync(`chmod -R u+w "${targetPath}" 2>/dev/null || true`).catch(() => {});
+            // Try removal
+            await execAsync(`rm -rf "${targetPath}"`);
+            removed = true;
+          } catch (error1) {
+            console.warn(`Method 1 failed: ${error1}`);
+            
+            // Method 2: Use Node's rmSync (may have different permissions)
+            try {
+              rmSync(targetPath, { recursive: true, force: true });
+              removed = true;
+            } catch (error2) {
+              console.warn(`Method 2 (rmSync) failed: ${error2}`);
+              
+              // Method 3: Try removing .git file first, then directory
+              try {
+                const gitFile = path.join(targetPath, '.git');
+                if (existsSync(gitFile)) {
+                  try {
+                    rmSync(gitFile, { force: true });
+                  } catch {
+                    // Try chmod then remove
+                    try {
+                      chmodSync(gitFile, 0o777);
+                      rmSync(gitFile, { force: true });
+                    } catch {
+                      // Ignore .git file removal errors
+                    }
+                  }
+                }
+                // Now try removing directory again
+                rmSync(targetPath, { recursive: true, force: true });
+                removed = true;
+              } catch (error3) {
+                console.warn(`Method 3 failed: ${error3}`);
+                
+                // Method 4: Last resort - try to remove contents individually
+                try {
+                  const files = readdirSync(targetPath);
+                  for (const file of files) {
+                    const filePath = path.join(targetPath, file);
+                    try {
+                      rmSync(filePath, { recursive: true, force: true });
+                    } catch {
+                      // Try with chmod first
+                      try {
+                        chmodSync(filePath, 0o777);
+                        rmSync(filePath, { recursive: true, force: true });
+                      } catch {
+                        // Continue with other files
+                      }
+                    }
+                  }
+                  // Try removing empty directory
+                  rmSync(targetPath, { force: true });
+                  removed = true;
+                } catch (error4) {
+                  console.error(`All removal methods failed for ${targetPath}`);
+                  throw new Error(`Failed to remove directory: ${error4 instanceof Error ? error4.message : String(error4)}`);
+                }
+              }
+            }
+          }
+          
+          if (!removed && existsSync(targetPath)) {
+            throw new Error(`Directory still exists after all removal attempts`);
+          }
+        }
+        
+        // Verify again
+        const dirStillExistsAfter = existsSync(targetPath);
+        if (dirStillExistsAfter) {
+          // Get host path for error message
+          const hostPath = targetPath.includes(ROOT_DIR) && ROOT_DIR !== HOST_ROOT_DIR
+            ? targetPath.replace(ROOT_DIR, HOST_ROOT_DIR)
+            : targetPath;
+          
+          return NextResponse.json(
+            { 
+              error: `Failed to remove worktree due to permission issues. Directory still exists.\n\n` +
+                     `The container user (UID ${process.env.USER_ID || '1023'}) cannot delete files owned by UID 1020.\n\n` +
+                     `To fix this, run on the host:\n` +
+                     `  sudo rm -rf "${hostPath}"\n\n` +
+                     `Or fix permissions for all worktrees:\n` +
+                     `  cd /home/tim-175/worktree-manager && ./fix-permissions.sh`,
+              success: false,
+              hostPath: hostPath
+            },
+            { status: 500 }
+          );
+        }
+        
+        // Check git list again
+        try {
+          const { stdout: finalList } = await execAsync('git worktree list', { cwd: repoPath });
+          const finalLines = finalList.trim().split('\n');
+          const normalizedTargetPath = targetPath.replace(/\/$/, '');
+          
+          const stillInGit = finalLines.some(line => {
+            const parts = line.trim().split(/\s+/);
+            if (parts.length < 2) return false;
+            const linePath = parts[0].replace(/\/$/, '');
+            return linePath === normalizedTargetPath || 
+                   path.resolve(linePath) === path.resolve(normalizedTargetPath);
+          });
+          
+          if (stillInGit) {
+            return NextResponse.json(
+              { 
+                error: `Worktree directory removed but still registered in git. Run 'git worktree prune' in ${repoPath} to clean it up.`,
+                success: false
+              },
+              { status: 500 }
+            );
+          }
+        } catch {
+          // Can't verify git list, but directory is gone, so consider it success
+        }
+      } catch (finalError: any) {
+        return NextResponse.json(
+          { 
+            error: `Failed to remove worktree: ${finalError.message}. Directory may still exist at: ${targetPath}`,
+            success: false
+          },
+          { status: 500 }
+        );
+      }
+    }
     
-    return NextResponse.json({
-      success: true,
-      message: 'Working tree deleted successfully'
-    });
+    return NextResponse.json({ success: true });
   } catch (error: any) {
     return NextResponse.json(
-      { error: error.message || 'Failed to delete working tree' },
+      { error: error.message || 'Failed to delete worktree' },
       { status: 500 }
     );
   }

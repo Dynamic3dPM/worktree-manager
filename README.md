@@ -9,17 +9,21 @@ A Next.js web application for managing Git working trees across multiple reposit
 - 🌿 **Branch Management**: Automatically creates branches from dev and organizes them by type (feat, bugs, fixes)
 - 🐳 **Dockerized**: Easy deployment in any environment with Docker
 - ⚡ **Real-time Status**: View all existing working trees at a glance
-- 📊 **GitHub Projects Integration**: Kanban board view with automatic backlog item creation
-- 🔄 **Drag-and-Drop**: Move items between columns to track work progress
 
 ## Quick Start
 
 ### Using Docker Compose
 
-1. **Set up your GitHub token** (create a `.env` file or export it):
+1. **Set up environment variables**:
    ```bash
-   export GITHUB_TOKEN=your_github_token_here
+   # Copy the example environment file
+   cp .env.example .env
+   
+   # Edit .env and fill in your values
+   nano .env  # or use your preferred editor
    ```
+   
+   At minimum, you need to set `GITHUB_TOKEN`. See [Environment Variables](#environment-variables) section for details.
 
 2. **Build and run**:
    ```bash
@@ -27,7 +31,7 @@ A Next.js web application for managing Git working trees across multiple reposit
    ```
 
 3. **Access the UI**:
-   Open http://localhost:3000 in your browser
+   Open http://localhost:3021 in your browser (port configured in docker-compose.yml)
 
 ### Development Mode
 
@@ -36,10 +40,13 @@ A Next.js web application for managing Git working trees across multiple reposit
    npm install
    ```
 
-2. **Set environment variables**:
+2. **Set up environment variables**:
    ```bash
-   export REPO_ROOT=/path/to/your/repos
-   export GITHUB_TOKEN=your_github_token_here
+   # Copy the example environment file
+   cp .env.example .env
+   
+   # Edit .env and fill in your values
+   nano .env  # or use your preferred editor
    ```
 
 3. **Run development server**:
@@ -51,12 +58,85 @@ A Next.js web application for managing Git working trees across multiple reposit
 
 ### Environment Variables
 
+All environment-specific configuration is managed through a `.env` file. A template file `.env.example` is provided with all available options documented.
+
+#### Required Variables
+
+- `GITHUB_TOKEN`: GitHub personal access token for cloning/fetching repositories
+  - Create one at: https://github.com/settings/tokens
+  - Required permissions: `repo` (for private repos), `read:org` (for org repos)
+
+#### Optional Variables
+
+**GitHub Configuration:**
+- `GITHUB_ORG`: GitHub organization or username (default: `timcarrender04`)
+
+**Repository Paths:**
 - `REPO_ROOT`: Root directory where repositories are located (default: `/repos`)
-- `HOST_REPO_ROOT`: Host path for repositories (default: same as `REPO_ROOT`)
-- `GITHUB_TOKEN`: GitHub personal access token for cloning repositories and managing projects
-- `GITHUB_ORG`: GitHub organization name (default: `AutoRemediation`)
-- `GITHUB_PROJECT_NAME`: Name for the workspace project (default: `Worktree Manager Project`)
-- `FRONTEND_REPO`, `BACKEND_REPO`, `VIEWER_REPO`: Repository names (defaults: `sideline-frontend`, `sideline-backend`, `ohif-viewer`)
+- `HOST_REPO_ROOT`: Host path for repositories, used for path translation (default: same as `REPO_ROOT`)
+- `WORKTREE_ROOT`: Root directory for worktrees (default: `{REPO_ROOT}/Tree`)
+
+**Repository Names** (only override if using different repo names):
+- `FRONTEND_REPO`: Frontend repository name (default: `sideline-frontend`)
+- `BACKEND_REPO`: Backend repository name (default: `sideline-backend`)
+- `VIEWER_REPO`: Viewer repository name (default: `ohif-viewer`)
+
+**Repository Keys** (only override if using different keys):
+- `FRONTEND_KEY`: Frontend repository key (default: `frontend`)
+- `BACKEND_KEY`: Backend repository key (default: `backend`)
+- `VIEWER_KEY`: Viewer repository key (default: `viewer`)
+
+**Supabase Configuration** (if using Supabase features):
+- `NEXT_PUBLIC_SUPABASE_URL`: Supabase project URL
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`: Supabase anonymous/public key
+- `SUPABASE_SERVICE_ROLE_KEY`: Supabase service role key (for admin operations)
+
+**Docker Configuration:**
+- `USER_ID`: Linux user ID for Docker container, should match host user ID (default: `1020`)
+  - Check your user ID with: `id -u`
+- `GROUP_ID`: Linux group ID for Docker container, should match host group ID (default: `1020`)
+  - Check your group ID with: `id -g`
+
+**AWS Configuration** (optional - if using AWS services):
+- `AWS_ACCESS_KEY_ID`: AWS access key
+- `AWS_SECRET_ACCESS_KEY`: AWS secret key
+- `AWS_REGION`: AWS region (e.g., `us-east-1`, `us-west-2`)
+
+**Varus Hill Configuration** (optional - if using Varus Hill service):
+- `VARUS_HILL_TOKEN`: Varus Hill service token
+
+#### Alternative GitHub Token Locations
+
+If `GITHUB_TOKEN` is not set in the environment, the application will automatically look for token files in these locations:
+- `{REPO_ROOT}/../.github-token`
+- `{REPO_ROOT}/../token`
+- `{REPO_ROOT}/../GITHUB_TOKEN`
+- `{REPO_ROOT}/.github-token`
+- `{REPO_ROOT}/token`
+- `{REPO_ROOT}/GITHUB_TOKEN`
+
+#### Environment File Setup
+
+1. Copy the example file:
+   ```bash
+   cp .env.example .env
+   ```
+
+2. Edit `.env` and fill in your values:
+   ```bash
+   nano .env  # or use your preferred editor
+   ```
+
+3. For Docker Compose: The `docker-compose.yml` automatically loads variables from `.env`. Restart the container after making changes:
+   ```bash
+   docker-compose restart
+   ```
+
+4. For Development: Next.js automatically loads `.env` files. Restart the dev server after making changes:
+   ```bash
+   # Stop with Ctrl+C
+   npm run dev
+   ```
 
 ### Repository Configuration
 
@@ -65,7 +145,7 @@ The app is pre-configured for:
 - `ohif-viewer` (viewer)
 - `sideline-backend` (backend)
 
-To modify repositories, edit `app/api/repos/route.ts` and `app/api/worktrees/route.ts`.
+To modify repositories, use environment variables (`FRONTEND_REPO`, `BACKEND_REPO`, `VIEWER_REPO`) in your `.env` file, or edit the default values in `app/api/worktrees/route.ts`.
 
 ## Docker Volume Mounting
 
@@ -96,15 +176,6 @@ The docker-compose.yml mounts the parent directory (`../`) to `/repos` so the co
 
 The working tree will be created in the format: `{repoName}-{type}-{name}/`
 
-### GitHub Projects Kanban Board
-
-1. Navigate to the **Projects** page from the sidebar
-2. View all worktree-related backlog items in a Kanban board
-3. Drag and drop items between columns to track progress
-4. When you create a worktree, a backlog item is automatically added to the project
-
-**Note**: The project is automatically created on first use if it doesn't exist.
-
 ## API Endpoints
 
 ### Worktrees
@@ -119,13 +190,6 @@ The working tree will be created in the format: `{repoName}-{type}-{name}/`
   }
   ```
 - `DELETE /api/worktrees` - Delete a working tree
-
-### Projects
-- `GET /api/projects` - List all organization projects
-- `POST /api/projects` - Create a new project
-- `GET /api/projects/[projectId]` - Get project details with columns and items
-- `POST /api/projects/[projectId]/items` - Create a backlog item
-- `PATCH /api/projects/[projectId]/items` - Update or move a project item
 
 ## Troubleshooting
 
@@ -145,14 +209,10 @@ Make sure your GitHub token has the necessary permissions:
 **For Classic Personal Access Tokens:**
 - `repo` scope (for private repositories and cloning)
 - `read:org` scope (if repositories are in an organization)
-- `project` scope (read & write) for GitHub Projects API
 
 **For Fine-Grained Personal Access Tokens:**
 - Repository access: Select the repositories you want to manage
 - Repository permissions: `Contents` (read), `Metadata` (read)
-- Organization permissions: `Projects` (read & write)
-
-**Note**: The token must have Projects permissions to create and manage the Kanban board. Without this, worktree creation will still work, but project items won't be created.
 
 ### Repository Not Found
 
@@ -171,20 +231,10 @@ worktree-manager/
 │   ├── api/
 │   │   ├── repos/
 │   │   │   └── route.ts           # Repository listing API
-│   │   ├── worktrees/
-│   │   │   └── route.ts           # Working tree management API
-│   │   └── projects/
-│   │       ├── route.ts           # Projects listing/creation API
-│   │       └── [projectId]/
-│   │           ├── route.ts       # Project details API
-│   │           └── items/
-│   │               └── route.ts   # Project items API
+│   │   └── worktrees/
+│   │       └── route.ts           # Working tree management API
 │   ├── components/
 │   │   └── Sidebar.tsx            # Navigation sidebar
-│   ├── lib/
-│   │   └── github-projects.ts     # GitHub Projects API client
-│   ├── projects/
-│   │   └── page.tsx               # Projects/Kanban board page
 │   ├── layout.tsx                 # Root layout with sidebar
 │   └── page.tsx                   # Main worktrees UI
 ├── Dockerfile
